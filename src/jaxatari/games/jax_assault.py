@@ -205,8 +205,10 @@ class AssaultState(NamedTuple):
     current_stage:  chex.Array
     enemies_spawned_this_stage: chex.Array
     enemies_invisible: chex.Array
+    enemies_completely_invisible: chex.Array
     cooldown: chex.Array
     fired: chex.Array
+
 
 
 class AssaultObservation(NamedTuple):
@@ -648,7 +650,8 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
             enemies_spawned_this_stage=jnp.array(0).astype(jnp.int32),
             enemies_invisible=jnp.array(0).astype(jnp.int32),
             cooldown=jnp.array(0).astype(jnp.int32),
-            fired=jnp.array(0).astype(jnp.int32)
+            fired=jnp.array(0).astype(jnp.int32),
+            enemies_completely_invisible=jnp.array(0).astype(jnp.int32)
         )
         obs = self._get_observation(state)
         def expand_and_copy(x):
@@ -838,14 +841,14 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
         new_current_stage = jnp.where(stage_complete, state.current_stage + 1, state.current_stage)
         
         invis_action = jax.lax.cond(
-            jnp.equal(state.current_stage, 1),
+            jnp.greater_equal(state.current_stage+1, INVIS_STAGES),
             lambda _: jax.random.uniform(jax.random.PRNGKey(state.step_counter), shape=()) < 0.01,
             lambda _: jnp.array(False),
             operand=None
         )
         enemies_invisible = jnp.where(invis_action, jnp.logical_not(state.enemies_invisible), state.enemies_invisible)
         enemies_invisible = jnp.where(stage_complete, jnp.array(0), enemies_invisible)
-
+        enemies_completely_invisible = jnp.greater_equal(new_state.current_stage+1, PERMA_INVIS_STAGES)
         new_state = new_state._replace(
             player_projectile_x=new_player_proj_x,
             player_projectile_y=new_player_proj_y,
@@ -874,6 +877,7 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
             occupied_y=occupied_y,
             enemies_spawned_this_stage=new_enemies_spawned_this_stage,
             enemies_invisible=enemies_invisible,
+            enemies_completely_invisible=enemies_completely_invisible,
             # TODO: update other fields as needed
         )
         
@@ -1145,17 +1149,17 @@ class Renderer_AtraJaxisAssault:
 
         def render_split_enemy(xy):
             x,y, raster = xy
-            should_render = jnp.logical_and(y < HEIGHT+1, jnp.logical_not(state.enemies_invisible))
+            should_render = jnp.logical_and(y < HEIGHT+1, jnp.logical_and(jnp.logical_not(state.enemies_invisible), jnp.logical_not(state.enemies_completely_invisible)))
             return jax.lax.cond(should_render, lambda _: render_at(raster, y, x, frame_enemy_tiny), lambda _: raster, operand=None)
         
         def render_enemy(xy):
             x,y, raster = xy
-            should_render = jnp.logical_and(y < HEIGHT+1, jnp.logical_not(state.enemies_invisible))
+            should_render = jnp.logical_and(y < HEIGHT+1, jnp.logical_and(jnp.logical_not(state.enemies_invisible), jnp.logical_not(state.enemies_completely_invisible)))
             return jax.lax.cond(should_render, lambda _: render_at(raster, y, x, frame_enemy), lambda _: raster, operand=None)
         
         def render_tiny_enemy(xy):
             x, y, raster = xy
-            should_render = jnp.logical_and(y < HEIGHT+1, jnp.logical_not(state.enemies_invisible))
+            should_render = jnp.logical_and(y < HEIGHT+1, jnp.logical_and(jnp.logical_not(state.enemies_invisible), jnp.logical_not(state.enemies_completely_invisible)))
             return jax.lax.cond(should_render, lambda _: render_at(raster, y, x, frame_enemy_tiny), lambda _: raster, operand=None)
 
         raster = jax.lax.cond( state.enemy_1_split == 1, render_split_enemy,render_enemy, [state.enemy_1_x,state.enemy_1_y, raster])
