@@ -32,13 +32,13 @@ Things that have been implemented:
 
 TO-Do's
 - Game accurate player projectile movement
-- Correct Stages for enemy splitting
-- Correct Stages for enemy invisibility
-- Correct Stages for following enemy projectile
-- Correct player/enemy speeds (and add player speed)
-- Correct Projectile speeds
-- Correct Dimensions
-    - Correct Enemy placing
+- Correct Stages for enemy splitting [X]
+- Correct Stages for enemy invisibility [X]
+- Correct Stages for following enemy projectile [X]
+- Correct player/enemy speeds [X]
+- Correct Projectile speeds 
+- Correct Dimensions [X]
+    - Correct Enemy placing [X]
 - Check for and correct bugs
 
 # Things that "should" be implemented:
@@ -59,8 +59,8 @@ stages:
 13 splitting enemies and perma invis
 """
 
-WIDTH = 160
-HEIGHT = 210
+WIDTH = 210
+HEIGHT = 160
 
 NOOP = 0
 FIRE = 1
@@ -70,24 +70,25 @@ RIGHTFIRE = 4
 LEFTFIRE = 5
 
 SPEED = 1
-MOTHERSHIP_Y = 32
-PLAYER_Y = 175
+MOTHERSHIP_Y = 24
+PLAYER_Y = 134
 MAX_HEAT = 15
 COOLDOWN_STEPS = 30
 MAX_LIVES = 3
-LIVES_Y = 200
+LIVES_Y = 152
 LIFE_ONE_X = 25
 LIFE_OFFSET = 20
 
-ENEMY_Y_POSITIONS = (64, 96, 128)
+ENEMY_Y_POSITIONS = (48, 64, 80)
 
 PLAYER_SIZE = (8, 8)
 ENEMY_SIZE = (16, 8)
 Y_STEP_DELAY = 70
 MOTHERSHIP_SIZE = (32, 16)
 
-WINDOW_WIDTH = 160 * 3
-WINDOW_HEIGHT = 210 * 3
+WINDOW_WIDTH = 210 * 3
+WINDOW_HEIGHT = 160 * 3
+BOTTOM_BAR_HEIGHT = 145
 
 FOLLOW_STAGES = 4
 SPLIT_STAGES = 5
@@ -238,7 +239,7 @@ def player_step(
     move_left = jnp.logical_or(action == LEFT, action == LEFTFIRE)
     move_right = jnp.logical_or(action == RIGHT, action == RIGHTFIRE)
     speed = jnp.where(move_left, -SPEED, jnp.where(move_right, SPEED, 0))
-    new_x = jnp.clip(state.player_x + speed, 0, 160 - int(PLAYER_SIZE[0]/2))
+    new_x = jnp.clip(state.player_x + 2*speed, 0, WIDTH - int(PLAYER_SIZE[0]/2))
     return state._replace(
         player_x=new_x,
         player_speed=speed
@@ -433,7 +434,7 @@ def enemy_step(state):
     def move_enemy_x(x, dir, linked_enemy_x=WIDTH+1):
         # If at left border, go right; if at right border, go left
         at_left = jnp.greater_equal(0, x)
-        at_right = jnp.greater_equal(x, 160 - int(ENEMY_SIZE[0]/2))
+        at_right = jnp.greater_equal(x, WIDTH - int(ENEMY_SIZE[0]/2))
         new_dir = jnp.where(at_left, 1, jnp.where(at_right, -1, dir))
 
         # check for linked enemy collision
@@ -451,7 +452,7 @@ def enemy_step(state):
 
         can_reverse = jnp.logical_not(jnp.logical_or.reduce(jnp.array([at_left, at_right, collision])))
         new_dir = jnp.where(jnp.logical_and(should_reverse, can_reverse), -new_dir, new_dir)
-        new_x = jnp.clip(x + new_dir * SPEED, 0, 160 - int(ENEMY_SIZE[0]/2))
+        new_x = jnp.clip(x + new_dir * SPEED, 0, WIDTH - int(ENEMY_SIZE[0]/2))
         return new_x, new_dir
 
     def move_enemy_y(y, occupied_y, has_moved, linked_enemy_lives=False):
@@ -575,9 +576,9 @@ def mothership_step(state):
     def move_mothership(x, dir):
         # If at left border, go right; if at right border, go left
         at_left = jnp.greater_equal(0, x)
-        at_right = jnp.greater_equal(x, 160 - MOTHERSHIP_SIZE[0])
+        at_right = jnp.greater_equal(x, WIDTH - MOTHERSHIP_SIZE[0])
         new_dir = jnp.where(at_left, 1, jnp.where(at_right, -1, dir))
-        new_x = jnp.clip(x + new_dir * SPEED, 0, 160 - MOTHERSHIP_SIZE[0])
+        new_x = jnp.clip(x + new_dir * SPEED, 0, WIDTH - MOTHERSHIP_SIZE[0])
         return new_x, new_dir
 
     # Move mothership left/right, clamp to screen
@@ -1273,6 +1274,14 @@ class Renderer_AtraJaxisAssault:
             return render_at(raster, LIVES_Y, LIFE_ONE_X + i * LIFE_OFFSET, self.LIFE_SPRITE)
         raster = jax.lax.fori_loop(0, state.player_lives, lives_fn, raster)
 
+        # Render grey line (bottom bar)
+        def grey_line_fn(raster):
+            grey_color = (128, 128, 128, 255)  # Grey color
+            return aj.render_bar(
+                raster, 0, BOTTOM_BAR_HEIGHT, 1, 1, WIDTH, 1, grey_color, grey_color
+            )
+        raster = grey_line_fn(raster)
+
         # Render heat bar(bottom right)
         def heat_bar_fn(heat, raster):
             color = (0, 255, 0, 255)
@@ -1281,7 +1290,6 @@ class Renderer_AtraJaxisAssault:
                 raster, WIDTH-60, LIVES_Y,heat+1,MAX_HEAT+1,48,5,color,background_color
             )
         raster = heat_bar_fn(state.heat, raster)
-        print(self.PLAYER_PROJECTILE)
         return raster
     
 if __name__ == "__main__":
@@ -1345,6 +1353,6 @@ if __name__ == "__main__":
         aj.update_pygame(screen, raster, 3, WIDTH, HEIGHT)
 
         counter += 1
-        clock.tick(60)
+        clock.tick(600)
 
     pygame.quit()
