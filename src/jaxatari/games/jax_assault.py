@@ -47,6 +47,16 @@ Things that "should" be implemented:
 Things that could be implemented:
 - loading more sprites to be more similar to the original game
 - Transition to linking enemy y positions to enemy_index
+
+stage_info:
+stages:
+1-3 nothing special
+4 following projectile
+5-7 splitting enemies
+8 splitting enemies and following projectiles
+9-11 splitting enemies and invis
+12 splitting enemies and invis and following projectiles
+13 splitting enemies and perma invis
 """
 
 WIDTH = 160
@@ -78,6 +88,11 @@ MOTHERSHIP_SIZE = (32, 16)
 
 WINDOW_WIDTH = 160 * 3
 WINDOW_HEIGHT = 210 * 3
+
+FOLLOW_STAGES = 4
+SPLIT_STAGES = 5
+INVIS_STAGES = 9
+PERMA_INVIS_STAGES = 13
 
 STATE_TRANSLATOR: dict = {
     0: "player_x",
@@ -351,8 +366,8 @@ def enemy_projectile_step(
     # Move projectile if active
     moving = new_proj_y >= 0
      # Check if this is a special stage (every third stage: 2, 5, 8, etc.)
-    # Since current_stage is 0-indexed (0=stage 1, 1=stage 2), we need stages where (current_stage + 1) % 3 == 2
-    is_special_stage = jnp.equal(jnp.mod(state.current_stage + 1, 4), 0)
+    # Since current_stage is 0-indexed (0=stage 1, 1=stage 2), we need stages where (current_stage + 1) % 3 == 0
+    is_special_stage = jnp.equal(jnp.mod(state.current_stage + 1, FOLLOW_STAGES), 0)
     
     # Check if projectile is near player's y-level
     near_player_level = jnp.logical_and(
@@ -401,9 +416,6 @@ def enemy_projectile_step(
         player_lives=new_lives
     )
     
-    
-
-
 @jax.jit
 def enemy_step(state):     
     occupied_y = state.occupied_y
@@ -636,7 +648,7 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
         occupied_y = new_state.occupied_y
 
         def split_condition(stage):
-            return stage > -1
+            return stage+1 >= SPLIT_STAGES
 
         def kill_enemy(arr):
             ex, ey, ew, eh, proj_x, proj_y, occupied_y, linked_y = arr
@@ -900,8 +912,6 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
             jnp.greater_equal(state.enemy_score, 20),
         )
     
-
-
 def load_assault_sprites():
     """
     Load all sprites required for Assault rendering.
