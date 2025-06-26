@@ -41,8 +41,8 @@ TO-Do's
     - Correct Enemy placing
 - Check for and correct bugs
 
-Things that "should" be implemented:
-- Use arrays for enemy positions and states instead of individual variables
+# Things that "should" be implemented:
+# - Use arrays for enemy positions and states instead of individual variables
 
 Things that could be implemented:
 - loading more sprites to be more similar to the original game
@@ -203,6 +203,8 @@ class AssaultState(NamedTuple):
     step_counter: chex.Array
     enemies_killed: chex.Array
     current_stage:  chex.Array
+    enemies_spawned_this_stage: chex.Array
+    enemies_invisible: chex.Array
     cooldown: chex.Array
     fired: chex.Array
 
@@ -308,8 +310,7 @@ def enemy_projectile_step(
     
     # Random chance of firing (1% probability)
     # Note: In a complete implementation, you would use a proper PRNG key
-    fire_random = jax.random.uniform(jax.random.PRNGKey(state.step_counter), shape=())
-    fire_action = fire_random < 0.05
+    fire_action = jnp.equal(jnp.mod(state.step_counter, 180), 0)
     #jax.debug.print(f"Can Fire : {can_fire}, Random fire chance: {fire_random}, Fire action: {fire_action}")
     spawn_proj = jnp.logical_and(fire_action, can_fire)
     
@@ -365,7 +366,7 @@ def enemy_projectile_step(
     
     # Move projectile if active
     moving = new_proj_y >= 0
-     # Check if this is a special stage (every third stage: 2, 5, 8, etc.)
+    # Check if this is a special stage (every third stage: 2, 5, 8, etc.)
     # Since current_stage is 0-indexed (0=stage 1, 1=stage 2), we need stages where (current_stage + 1) % 3 == 0
     is_special_stage = jnp.equal(jnp.mod(state.current_stage + 1, FOLLOW_STAGES), 0)
     
@@ -416,6 +417,9 @@ def enemy_projectile_step(
         player_lives=new_lives
     )
     
+    
+
+
 @jax.jit
 def enemy_step(state):     
     occupied_y = state.occupied_y
@@ -429,10 +433,22 @@ def enemy_step(state):
         at_left = jnp.greater_equal(0, x)
         at_right = jnp.greater_equal(x, 160 - int(ENEMY_SIZE[0]/2))
         new_dir = jnp.where(at_left, 1, jnp.where(at_right, -1, dir))
+
         # check for linked enemy collision
         collision = jnp.logical_not(jnp.logical_or(x > linked_enemy_x + int(ENEMY_SIZE[0]/2), x < linked_enemy_x - int(ENEMY_SIZE[0]/2)))
         # If collision, reverse direction
         new_dir = jnp.where(collision, -new_dir, new_dir)
+
+        # Randomly reverse direction
+        check_interval = 50 + jnp.mod(x * 7, 50)  # Enemy 1: every 32 frames, Enemy 2: every 39 frames, etc.
+        should_check_random = jnp.equal(jnp.mod(state.step_counter, check_interval), 0)
+        random_seed = jnp.mod(state.step_counter + x, 10000)
+        random_chance = jax.random.uniform(jax.random.PRNGKey(random_seed), shape=())
+        should_reverse = jnp.logical_and(should_check_random, random_chance < 0.5)  # Higher chance but less frequent
+
+
+        can_reverse = jnp.logical_not(jnp.logical_or.reduce(jnp.array([at_left, at_right, collision])))
+        new_dir = jnp.where(jnp.logical_and(should_reverse, can_reverse), -new_dir, new_dir)
         new_x = jnp.clip(x + new_dir * SPEED, 0, 160 - int(ENEMY_SIZE[0]/2))
         return new_x, new_dir
 
@@ -445,11 +461,15 @@ def enemy_step(state):
         has_match = jnp.any(matches)
         idx = jnp.argmax(matches)  # Returns 0 if no match
         
+        can_spawn_more = jnp.less(state.enemies_spawned_this_stage, 10)
+
+
         # Determine which action to take - only move down if no other enemy has moved
         should_spawn = jnp.logical_and.reduce(jnp.array([
             jnp.logical_and(is_inactive, occupied_y[0] == 0),
             jnp.logical_and(has_moved == 0, allow_y_movement),
-            jnp.logical_not(linked_enemy_lives)
+            jnp.logical_not(linked_enemy_lives),
+            can_spawn_more
         ]))
         
         should_move_down = jnp.logical_and(
@@ -462,11 +482,6 @@ def enemy_step(state):
         
         # Define actions as separate functions
         def spawn():
-            # Generate a random x position between 0 and (160 - ENEMY_SIZE[0]/2)
-            # Using hash of the current game state for deterministic randomness
-            x_pos = state.mothership_x
-            
-            # Mark row 0 as occupied and place enemy there
             new_occupied = occupied_y.at[0].set(1)
             # No downward movement occurred
             # Return the random x as well
@@ -512,14 +527,22 @@ def enemy_step(state):
     # Update e1_x with random_x if needed
     e1_x = jnp.where(has_spawned >= 0, state.mothership_x, e1_x)
     e1_split = jnp.where(has_spawned == 1, 0, state.enemy_1_split)
+    enemy_1_spawned = jnp.where(has_spawned == 1, 1, 0) # Count spawns for enemy 1
 
     e2_y, occupied_y, has_moved_down, has_spawned = move_enemy_y(state.enemy_2_y, occupied_y, has_moved_down, jnp.less_equal(state.enemy_5_y, HEIGHT))
     e2_x = jnp.where(has_spawned >= 0, state.mothership_x, e2_x)
     e2_split = jnp.where(has_spawned == 1, 0, state.enemy_2_split)
+    enemy_2_spawned = jnp.where(has_spawned == 1, 1, 0) # Count spawns for enemy 2
+
 
     e3_y, occupied_y, has_moved_down, has_spawned = move_enemy_y(state.enemy_3_y, occupied_y, has_moved_down, jnp.less_equal(state.enemy_6_y, HEIGHT))
     e3_x = jnp.where(has_spawned >= 0, state.mothership_x, e3_x)
     e3_split = jnp.where(has_spawned == 1, 0, state.enemy_3_split)
+    enemy_3_spawned = jnp.where(has_spawned == 1, 1, 0) # Count spawns for enemy 3
+
+    total_spawned_this_frame = enemy_1_spawned + enemy_2_spawned + enemy_3_spawned
+    new_enemies_spawned_this_stage = state.enemies_spawned_this_stage + total_spawned_this_frame
+
     
     e4_y, occupied_y, has_moved_down, has_spawned = move_enemy_y(state.enemy_4_y, occupied_y, has_moved_down, True)
     #e4_x = jnp.where(has_spawned >= 0, state.mothership_x, e4_x)
@@ -541,7 +564,8 @@ def enemy_step(state):
         enemy_5_x=e5_x, enemy_5_y=e5_y, enemy_5_dir=e5_dir,
         enemy_6_x=e6_x, enemy_6_y=e6_y, enemy_6_dir=e6_dir,
         enemy_1_split=e1_split, enemy_2_split=e2_split, enemy_3_split=e3_split,
-        occupied_y=occupied_y  
+        occupied_y=occupied_y,
+        enemies_spawned_this_stage=new_enemies_spawned_this_stage  # Update spawn count here
     )
 
 @jax.jit
@@ -621,6 +645,8 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
             step_counter=jnp.array(0).astype(jnp.int32),
             enemies_killed=jnp.array(0).astype(jnp.int32),
             current_stage=jnp.array(0).astype(jnp.int32),
+            enemies_spawned_this_stage=jnp.array(0).astype(jnp.int32),
+            enemies_invisible=jnp.array(0).astype(jnp.int32),
             cooldown=jnp.array(0).astype(jnp.int32),
             fired=jnp.array(0).astype(jnp.int32)
         )
@@ -636,9 +662,6 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
     def step(self, state: AssaultState, action: chex.Array) -> Tuple[AssaultState, AssaultObservation, float, bool, AssaultInfo]:
         # Player step
         new_state = player_step(state, action)
-        # Enemy step (stub)
-
-        
 
         new_state = player_projectile_step(new_state,action)
         new_state = enemy_projectile_step(new_state)
@@ -646,6 +669,44 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
         new_state = mothership_step(new_state)
         new_state = cooldown_step(new_state)
         occupied_y = new_state.occupied_y
+
+        player_proj_active = jnp.greater_equal(new_state.player_projectile_y, 0)
+        enemy_proj_active = jnp.greater_equal(new_state.enemy_projectile_y, 0)
+        enemy_proj_lateral = jnp.equal(new_state.enemy_projectile_y, PLAYER_Y)  # Only lateral projectiles
+
+        current_x_distance = new_state.player_projectile_x - new_state.enemy_projectile_x
+        enemy_horizontal_dir = jnp.sign(state.player_x - new_state.enemy_projectile_x)
+        enemy_prev_x = new_state.enemy_projectile_x - enemy_horizontal_dir * 2  # Enemy was 2 pixels away in opposite direction
+        
+        # Calculate previous distances
+        prev_x_distance = new_state.player_projectile_x - enemy_prev_x
+        x_sign_changed = jnp.not_equal(jnp.sign(current_x_distance), jnp.sign(prev_x_distance))
+
+        projectiles_intersecting = jnp.logical_and.reduce(jnp.array([
+            player_proj_active,
+            enemy_proj_active,
+            enemy_proj_lateral,
+            x_sign_changed,      # X distance changed sign (crossed horizontally)
+        ]))
+        
+        projectile_collision = jnp.logical_and.reduce(jnp.array([
+            player_proj_active,
+            enemy_proj_active,
+            enemy_proj_lateral,  # Only allow collision when enemy projectile is lateral
+            check_collision(
+                new_state.player_projectile_x, new_state.player_projectile_y,
+                new_state.enemy_projectile_x, new_state.enemy_projectile_y,
+                4, 4  # Collision box size
+            )
+        ]))
+
+        new_player_proj_x = jnp.where(projectile_collision, -1, new_state.player_projectile_x)
+        new_player_proj_y = jnp.where(projectile_collision, -1, new_state.player_projectile_y)
+        new_player_proj_dir = jnp.where(projectile_collision, 0, new_state.player_projectile_dir)
+        
+        new_enemy_proj_x = jnp.where(projectile_collision, -1, new_state.enemy_projectile_x)
+        new_enemy_proj_y = jnp.where(projectile_collision, -1, new_state.enemy_projectile_y)
+        new_enemy_proj_dir = jnp.where(projectile_collision, 0, new_state.enemy_projectile_dir)
 
         def split_condition(stage):
             return stage+1 >= SPLIT_STAGES
@@ -656,12 +717,14 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
             matches = jnp.array(ENEMY_Y_POSITIONS) == ey
             has_match = jnp.any(matches)
             idx = jnp.argmax(matches)
+            
             new_occupied_y = jax.lax.cond(
                 jnp.logical_and.reduce(jnp.array([hit, has_match, linked_y > HEIGHT])), 
                 lambda _: occupied_y.at[idx].set(0), 
                 lambda _: occupied_y, 
                 operand=None
             )
+
             new_ex = jnp.where(hit, -1, ex)
             new_ey = jnp.where(hit, HEIGHT+1, ey)
             return new_ex, new_ey, hit, new_occupied_y
@@ -712,7 +775,7 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
         xy4 = jnp.array([new_state.enemy_4_x, new_state.enemy_4_y])
         spawn4 = jnp.array([e1_x, e1_y])
         arr4 = jnp.where(jnp.logical_and(splitting_enemies, jnp.logical_and(hit1, was_split)), spawn4, xy4)
-        arg4 = [arr4[0], arr4[1], ENEMY_SIZE[0], ENEMY_SIZE[1], new_state.player_projectile_x, new_state.player_projectile_y, occupied_y, new_state.enemy_1_y]
+        arg4 = [arr4[0], arr4[1], ENEMY_SIZE[0], ENEMY_SIZE[1], new_state.player_projectile_x, new_state.player_projectile_y, occupied_y, e1_y]
         
         e4_x, e4_y, hit4, occupied_y = jax.lax.cond(jnp.logical_and(hit1, was_split),
                                                     spawn_enemy,
@@ -723,7 +786,7 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
         xy5 = jnp.array([new_state.enemy_5_x, new_state.enemy_5_y])
         spawn5 = jnp.array([e2_x, e2_y])
         arr5 = jnp.where(jnp.logical_and(splitting_enemies, jnp.logical_and(hit2, was_split)), spawn5, xy5)
-        arg5 = [arr5[0], arr5[1], ENEMY_SIZE[0], ENEMY_SIZE[1], new_state.player_projectile_x, new_state.player_projectile_y, occupied_y, new_state.enemy_2_y]
+        arg5 = [arr5[0], arr5[1], ENEMY_SIZE[0], ENEMY_SIZE[1], new_state.player_projectile_x, new_state.player_projectile_y, occupied_y, e2_y]
         e5_x, e5_y, hit5, occupied_y = jax.lax.cond(jnp.logical_and(hit2, was_split),
                                                     spawn_enemy,
                                                     kill_enemy,
@@ -732,7 +795,7 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
         xy6 = jnp.array([new_state.enemy_6_x, new_state.enemy_6_y])
         spawn6 = jnp.array([e3_x, e3_y])
         arr6 = jnp.where(jnp.logical_and(splitting_enemies, jnp.logical_and(hit3, was_split)), spawn6, xy6)
-        arg6 = [arr6[0], arr6[1], ENEMY_SIZE[0], ENEMY_SIZE[1], new_state.player_projectile_x, new_state.player_projectile_y, occupied_y, new_state.enemy_3_y]
+        arg6 = [arr6[0], arr6[1], ENEMY_SIZE[0], ENEMY_SIZE[1], new_state.player_projectile_x, new_state.player_projectile_y, occupied_y, e3_y]
         e6_x, e6_y, hit6, occupied_y = jax.lax.cond(jnp.logical_and(hit3, was_split),
                                                     spawn_enemy,
                                                     kill_enemy,
@@ -742,25 +805,54 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
         # If any enemy was hit, remove projectile
         any_hit = hit1 | hit2 | hit3 | hit4 | hit5 | hit6
         
-        new_proj_x = jnp.where(any_hit, -1, new_state.player_projectile_x)
-        new_proj_y = jnp.where(any_hit, -1, new_state.player_projectile_y)
-        new_proj_dir = jnp.where(any_hit, 0, new_state.player_projectile_dir)
+        new_player_proj_x = jnp.where(jnp.logical_and(any_hit, jnp.logical_not(projectile_collision)), -1, new_state.player_projectile_x)
+        new_player_proj_y = jnp.where(jnp.logical_and(any_hit, jnp.logical_not(projectile_collision)), -1, new_state.player_projectile_y)
+        new_player_proj_dir = jnp.where(jnp.logical_and(any_hit, jnp.logical_not(projectile_collision)), 0, new_state.player_projectile_dir)
 
 
         # Increase score for each enemy hit (e.g., +1 per enemy)
         score_incr = hit1.astype(jnp.int32) + hit2.astype(jnp.int32) + hit3.astype(jnp.int32) + \
                     hit4.astype(jnp.int32) + hit5.astype(jnp.int32) + hit6.astype(jnp.int32)
-        new_score = state.score + score_incr
-
-        new_enemies_killed = state.enemies_killed + score_incr
-        stage_complete = jnp.greater_equal(new_enemies_killed, 10)
-        new_current_stage = jnp.where(stage_complete, state.current_stage + 1, state.current_stage)
-        new_enemies_killed = jnp.where(stage_complete, 0, new_enemies_killed)
         
+        enemy_1_killed = jnp.logical_and(hit1, jnp.logical_not(state.enemy_1_split))
+        enemy_2_killed = jnp.logical_and(hit2, jnp.logical_not(state.enemy_2_split))
+        enemy_3_killed = jnp.logical_and(hit3, jnp.logical_not(state.enemy_3_split))
+
+        kills_incr = enemy_1_killed.astype(jnp.int32) + enemy_2_killed.astype(jnp.int32) + enemy_3_killed.astype(jnp.int32)
+
+        
+        new_score = state.score + score_incr
+        new_enemies_killed = state.enemies_killed + kills_incr
+        all_rows_empty = jnp.array_equal(new_state.occupied_y, jnp.array([0, 0, 0]))
+
+        
+
+        #stage_complete = jnp.logical_and(jnp.equal(jnp.mod(new_enemies_killed, 10), 0), (new_enemies_killed > 0))
+        stage_complete = jnp.logical_and.reduce(jnp.array([
+            jnp.greater(new_enemies_killed, 0),  # Enemies were killed this step
+            jnp.equal(jnp.mod(new_enemies_killed, 10), 0),  # Total kills is multiple of 10
+            all_rows_empty  # No enemies occupying any row
+        ]))
+        new_enemies_killed = jnp.where(stage_complete, 0, new_enemies_killed)
+        new_enemies_spawned_this_stage = jnp.where(stage_complete, 0, new_state.enemies_spawned_this_stage)
+        new_current_stage = jnp.where(stage_complete, state.current_stage + 1, state.current_stage)
+        
+        invis_action = jax.lax.cond(
+            jnp.equal(state.current_stage, 1),
+            lambda _: jax.random.uniform(jax.random.PRNGKey(state.step_counter), shape=()) < 0.01,
+            lambda _: jnp.array(False),
+            operand=None
+        )
+        enemies_invisible = jnp.where(invis_action, jnp.logical_not(state.enemies_invisible), state.enemies_invisible)
+        enemies_invisible = jnp.where(stage_complete, jnp.array(0), enemies_invisible)
+
         new_state = new_state._replace(
-            player_projectile_x=new_proj_x,
-            player_projectile_y=new_proj_y,
-            player_projectile_dir=new_proj_dir,
+            player_projectile_x=new_player_proj_x,
+            player_projectile_y=new_player_proj_y,
+            player_projectile_dir=new_player_proj_dir,
+            enemy_projectile_x=new_enemy_proj_x,
+            enemy_projectile_y=new_enemy_proj_y,
+            enemy_projectile_dir=new_enemy_proj_dir,
             enemy_1_x=e1_x, enemy_1_y=e1_y,
             enemy_1_split=jnp.logical_or(new_state.enemy_1_split, e1_split),
             enemy_1_dir=jnp.where(e1_split,-1, new_state.enemy_1_dir),
@@ -780,6 +872,8 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
             enemies_killed=new_enemies_killed,
             current_stage=new_current_stage,
             occupied_y=occupied_y,
+            enemies_spawned_this_stage=new_enemies_spawned_this_stage,
+            enemies_invisible=enemies_invisible,
             # TODO: update other fields as needed
         )
         
@@ -912,6 +1006,8 @@ class JaxAssault(JaxEnvironment[AssaultState, AssaultObservation, AssaultInfo]):
             jnp.greater_equal(state.enemy_score, 20),
         )
     
+
+
 def load_assault_sprites():
     """
     Load all sprites required for Assault rendering.
@@ -1049,17 +1145,26 @@ class Renderer_AtraJaxisAssault:
 
         def render_split_enemy(xy):
             x,y, raster = xy
-            return jax.lax.cond(y < HEIGHT+1, lambda _: render_at(raster, y, x, frame_enemy_tiny), lambda _: raster, operand=None)
+            should_render = jnp.logical_and(y < HEIGHT+1, jnp.logical_not(state.enemies_invisible))
+            return jax.lax.cond(should_render, lambda _: render_at(raster, y, x, frame_enemy_tiny), lambda _: raster, operand=None)
+        
         def render_enemy(xy):
             x,y, raster = xy
-            return jax.lax.cond(y < HEIGHT+1, lambda _: render_at(raster, y, x, frame_enemy), lambda _: raster, operand=None)
+            should_render = jnp.logical_and(y < HEIGHT+1, jnp.logical_not(state.enemies_invisible))
+            return jax.lax.cond(should_render, lambda _: render_at(raster, y, x, frame_enemy), lambda _: raster, operand=None)
+        
+        def render_tiny_enemy(xy):
+            x, y, raster = xy
+            should_render = jnp.logical_and(y < HEIGHT+1, jnp.logical_not(state.enemies_invisible))
+            return jax.lax.cond(should_render, lambda _: render_at(raster, y, x, frame_enemy_tiny), lambda _: raster, operand=None)
+
         raster = jax.lax.cond( state.enemy_1_split == 1, render_split_enemy,render_enemy, [state.enemy_1_x,state.enemy_1_y, raster])
         raster = jax.lax.cond( state.enemy_2_split == 1, render_split_enemy,render_enemy, [state.enemy_2_x, state.enemy_2_y, raster])
         raster = jax.lax.cond( state.enemy_3_split == 1, render_split_enemy,render_enemy, [state.enemy_3_x, state.enemy_3_y, raster])
-        raster = jax.lax.cond( state.enemy_4_y < HEIGHT+1, lambda _: render_at(raster, state.enemy_4_y, state.enemy_4_x, frame_enemy_tiny), lambda _: raster, operand=None)
-        raster = jax.lax.cond( state.enemy_5_y < HEIGHT+1, lambda _: render_at(raster, state.enemy_5_y, state.enemy_5_x, frame_enemy_tiny), lambda _: raster, operand=None)
-        raster = jax.lax.cond( state.enemy_6_y < HEIGHT+1, lambda _: render_at(raster, state.enemy_6_y, state.enemy_6_x, frame_enemy_tiny), lambda _: raster, operand=None)
-        
+
+        raster = render_tiny_enemy([state.enemy_4_x, state.enemy_4_y, raster])
+        raster = render_tiny_enemy([state.enemy_5_x, state.enemy_5_y, raster])
+        raster = render_tiny_enemy([state.enemy_6_x, state.enemy_6_y, raster])        
         self.PLAYER_PROJECTILE_SIDEWAYS = jnp.array([[[[236, 236, 236, 255]]]*7])
         
         # Render player projectile using lax.cond
@@ -1227,6 +1332,8 @@ if __name__ == "__main__":
             if counter % frameskip == 0:
                 action = get_human_action()
                 obs, curr_state, reward, done, info = jitted_step(curr_state, action)
+
+        
 
         # Render and display
         raster = renderer.render(curr_state)
