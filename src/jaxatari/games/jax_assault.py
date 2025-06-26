@@ -1215,6 +1215,13 @@ if __name__ == "__main__":
                         obs, curr_state, reward, done, info = jitted_step(
                             curr_state, action
                         )
+        game_over = jnp.logical_or(
+            jnp.less_equal(curr_state.player_lives, 0),  # Player has 0 or fewer lives
+            jnp.greater_equal(curr_state.score, 999999)  # Score reached 999999
+        )
+        if game_over:
+            print(f"Game Over! Final Score: {curr_state.score}, Lives: {curr_state.player_lives}")
+            running = True
 
         if not frame_by_frame:
             if counter % frameskip == 0:
